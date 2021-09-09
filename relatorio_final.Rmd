@@ -1,0 +1,195 @@
+---
+title: "Análise exploratória inicial da PNAD COVID - Projeto Observatório da COVID-19"
+author: "Meios Jr"
+date: "9/3/2021"
+output: html_document
+---
+
+```{r, include=FALSE}
+load('manipulacao.RData')
+
+```
+
+```{r setup, include=FALSE}
+
+options(scipen = 999)
+knitr::opts_chunk$set(echo=FALSE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+## Análise individual
+
+### **Proporção de contaminados por COVID por sexo**
+
+#### Frequência absoluta:
+
+```{r}
+tabela_cont_sexo_ABS_kbl
+```
+
+#### Frequência relativa:
+
+```{r}
+tabela_cont_sexo_PERC_kbl
+
+```
+
+### **Proporção de contaminados por Raça/Cor**
+
+#### Frequência relativa
+
+```{r}
+tabela_cont_racacor_kbl
+```
+
+### **Quartis da idade dos indivíduos contaminados**
+
+```{r}
+quartis_idade_contaminados_kbl
+```
+
+### **Proporção de contaminados por profissão**
+
+|     |                                                                                                 |
+|-----|-------------------------------------------------------------------------------------------------|
+| 01  | Empregado doméstico, diarista, cozinheiro (em domicílios particulares),                         |
+| 02  | Faxineiro, auxiliar de limpeza etc. (em empresa pública ou privada),                            |
+| 03  | Auxiliar de escritório, escriturário                                                            |
+| 04  | Secretária, recepcionista                                                                       |
+| 05  | Operador de Telemarketing                                                                       |
+| 06  | Comerciante (dono do bar, da loja etc.)                                                         |
+| 07  | Balconista, vendedor de loja                                                                    |
+| 08  | Vendedor a domicílio, representante de vendas, vendedor de catálogo (Avon, Natura etc.)         |
+| 09  | Vendedor ambulante (feirante, camelô, comerciante de rua, quiosque)                             |
+| 10  | Cozinheiro e garçon (de restaurantes, empresas)                                                 |
+| 11  | Padeiro, açougueiro e doceiro                                                                   |
+| 12  | Agricultor, criador de animais, pescador, silvicultor e jardineiro                              |
+| 13  | Auxiliar da agropecuária (colhedor de frutas, boia fria, etc.)                                  |
+| 14  | Motorista (de aplicativo, de taxi, de van, de mototáxi, de ônibus)                              |
+| 15  | Motorista de caminhão (caminhoneiro),                                                           |
+| 16  | Motoboy,                                                                                        |
+| 17  | Entregador de mercadorias (de restaurante, de farmácia, de loja, Uber Eats, IFood, Rappy etc.)  |
+| 18  | Pedreiro, servente de pedreiro, pintor, eletricista, marceneiro                                 |
+| 19  | Mecânico de veículos, máquinas industriais etc.                                                 |
+| 20  | Artesão, costureiro e sapateiro                                                                 |
+| 21  | Cabeleireiro, manicure e afins                                                                  |
+| 22  | Operador de máquinas, montador na indústria;                                                    |
+| 23  | Auxiliar de produção, de carga e descarga;                                                      |
+| 24  | Professor da educação infantil, de ensino fundamental, médio ou superior,                       |
+| 25  | Pedagogo, professor de idiomas, música, arte e reforço escolar                                  |
+| 26  | Médico, enfermeiro, profissionais de saúde de nível superior                                    |
+| 27  | Técnico, profissional da saúde de nível médio                                                   |
+| 28  | Cuidador de crianças, doentes ou idosos                                                         |
+| 29  | Segurança, vigilante, outro trabalhador dos serviços de proteção                                |
+| 30  | Policial civil                                                                                  |
+| 31  | Porteiro, zelador                                                                               |
+| 32  | Artista, religioso (padre, pastor etc.)                                                         |
+| 33  | Diretor, gerente, cargo político ou comissionado                                                |
+| 34  | Outra profissão de nível superior (advogado, engenheiro, contador, jornalista etc.)             |
+| 35  | Outro técnico ou profissional de nível médio                                                    |
+| 36  | Outros                                                                                          |
+
+```{r}
+prop_cont_profis_kbl
+```
+
+### **Proporção de indivíduos contaminados e não contaminados em relação ao afastamento do trabalho (Motivo)**
+
+|     |                                                                                                                                       |
+|-----|---------------------------------------------------------------------------------------------------------------------------------------|
+| 1   | Estava em quarentena, isolamento, distanciamento social ou férias coletivas                                                           |
+| 2   | Férias, folga ou jornada de trabalho variável                                                                                         |
+| 3   | Licença maternidade ou paternidade                                                                                                    |
+| 4   | Licença remunerada por motivo de saúde ou acidente da própria pessoa                                                                  |
+| 5   | Outro tipo de licença remunerada (estudo, paternidade, casamento, licença prêmio, etc.)                                               |
+| 6   | Afastamento do próprio negócio/empresa por motivo de gestação, saúde, acidente, etc., sem ser remunerado por instituto de previdência |
+| 7   | Fatores ocasionais (mau tempo, paralisação nos serviços de transportes, etc.)                                                         |
+| 8   | Outro motivo                                                                                                                          |
+
+```{r}
+pro_contam_afast_kbl
+```
+
+### **Quartis do número de horas trabalhadas (normalmente e efetivamente) por toda a população trabalhadora e pela população trabalhadora contaminada.**
+
+#### Horas normalmente trabalhadas
+
+```{r}
+horas_norm_trab_kbl
+```
+
+#### Horas normalmente trabalhadas por profissão
+
+```{r}
+horas_norm_trab_PROF_kbl
+```
+
+#### Horas efetivamente trabalhadas
+
+```{r}
+horas_efet_trab_kbl
+```
+
+#### Horas efetivamente trabalhadas por profissão
+
+```{r}
+horas_efet_trab_profissao_kbl
+```
+
+#### Normalmente - efetivamente trabalhadas (População total)
+
+```{r}
+norm_efet_trab_tudo_kbl
+```
+
+#### Normalmente - efetivamente trabalhadas (por ocupação)
+
+```{r}
+norm_efet_trab_prof_kbl
+```
+
+## Análises domiciliares
+
+#### Total de domicílios por número de moradores
+
+```{r}
+dom_numero_moradores_kbl
+```
+
+### **Número de moradores no domicílio - Sem indivíduos contaminados ou com pelo menos um contaminado**
+
+```{r}
+pelo_menos_um_cont_kbl
+```
+
+### Proporção de domicílios que possuem pelo menos uma pessoa no grupo de risco, por situação de contaminação
+
+```{r}
+mediacont_naocont_gruporisco_kbl
+
+```
+
+### Proporção de domicílios por situação de trabalho e testagem
+
+```{r}
+cart_assinada_cont_kbl
+```
+
+### **Quartis dos rendimentos do trabalho dos domicílios por situação de contaminação pela COVID-19.**
+
+```{r}
+rend_trab_cont_kbl
+```
+
+### **Média dos valores recebidos via aposentadoria e pensão para domicílios contaminados ou não contaminados**
+
+```{r}
+rend_dom_INSS_kbl
+```
+
+### **Índice dos domicílios vulneráveis**
+
+```{r}
+indicador_risco_quartis_kbl
+```

@@ -1,0 +1,1115 @@
+---
+title: "Consultoria Meios Jr - Análise descritiva da contaminação domiciliar por COVID-19"
+author: "Rômulo Damasceno"
+date: "4/1/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Carregando os pacotes e definindo opções globais para os chunks
+
+```{r setup, Load libraries}
+library(tidyverse)
+library(readxl)
+library(scales)
+library(readr)
+library(data.table)
+library(kableExtra)
+library(knitr)
+library(arsenal)
+library(survey)
+library(srvyr)
+library(spatstat)
+library(radiant.data)
+library(janitor)
+
+options(scipen = 999)
+knitr::opts_chunk$set(echo=FALSE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+### Importação dos bancos de dados
+
+```{r, include=FALSE}
+
+files <- list.files(pattern="*.csv")
+PNADCOV <- rbindlist(lapply(files, fread), fill = T)
+
+```
+
+**Notas:** É importante que os arquivos da PNAD COVID, em formato CSV estejam no diretório padrão do projeto. Vide a aba "files" no canto inferior direito.
+
+### Montagem do domicílio
+
+Montar o domicílio nada mais é do que agrupar as variáveis que são capazes de identificar os indivíduos da base que residem num mesmo domicílio.
+
+As variáveis em questão são:
+
+1.  UPA
+2.  V1008
+3.  Estrato
+
+#### Criação do identificador do indivíduo no domicílio
+
+```{r}
+
+#Criando o identificador domiciliar
+
+PNADCOV_original <- PNADCOV %>%  
+  unite(id_domicilio, UPA, V1008, Estrato, remove = F)
+
+
+
+PNADCOV <- PNADCOV_original %>% 
+  unite(id_domicilio, UPA, V1008, Estrato, remove = F)
+
+
+
+```
+
+#### Checagem do procedimento
+
+```{r}
+#Pegando o indivíduo com o maior número de ordem e cruzando com o número de pessoas no suposto domicílio (checagem) - Parece ser a forma correta de abordar a questão
+
+id_dom <- PNADCOV %>% 
+  group_by(id_domicilio, V1013) %>% 
+  summarise(maior_numero_ordem = max(A001),
+            contagem = n())
+
+id_dom <- id_dom %>% 
+  mutate(diff_tamanho = maior_numero_ordem - contagem) %>% 
+  arrange(desc(diff_tamanho))
+
+vinte_e_dois <- id_dom %>% 
+  filter(diff_tamanho >= 1)
+
+
+```
+
+#### (Domicilios) Recodificações para análise
+
+1.  Definir quem são os indivíduos infectados a partir da criação da variável de identificação de contaminação;
+2.  Definir quem são os indivíduos do grupo de risco (hipertensos, diabéticos, idosos)
+
+```{r}
+
+
+PNADCOV <- PNADCOV %>% 
+  mutate(testou_positivo = if_else(condition =
+                                     (B009B == 1 | B009D == 1 | B009F == 1),
+                                   true =  'Positivo',
+                                   false = 'Outras condições',
+                                   missing = 'Outras condições'),
+         grupo_de_risco = if_else(condition = 
+                                    B0102 == 1 | B0101 == 1 | A002 >= 60,
+                                  true = 'Grupo de risco',
+                                  false = 'Não grupo de risco'),
+         carteira_assinada = if_else(condition = C007B == 1 | C007B == 2,
+                                     true = 'Carteira assinada',
+                                     false = 'Não tem carteira assinada'),
+         indrisco_aluguel = if_else(condition = F001 == 1,
+                                    true = 0, # Peso maior par aluguel
+                                    false = 2),
+         indrisco_limpeza = if_else(condition = F002A1 != 1,
+                                    true = 1,
+                                    false = 0,
+                                    missing = 1),
+         indrisco_alcool  = if_else(condition = F002A2 != 1,
+                                    true = 1,
+                                    false = 0,
+                                    missing = 1),
+         indrisco_mascaras = if_else(condition = F002A3 != 1,
+                                    true = 1,
+                                    false = 0,
+                                    missing = 1),
+         indrisco_agsanit  = if_else(condition = F002A5 != 1,
+                                    true = 1,
+                                    false = 0,
+                                    missing = 1))
+         
+  
+
+
+#Check
+table(PNADCOV$indrisco_limpeza, useNA= 'always')
+
+#PNADCOV %>% 
+#  select(B009B, B009D, B009F, testou_positivo)
+
+```
+
+#### (Domicílios) - Banco específico
+
+```{r}
+
+domicilios <- PNADCOV %>% 
+  group_by(id_domicilio, V1013) %>% 
+  mutate(A004 = as.factor(A004)) %>% 
+  summarise(n_moradores = n(),
+            n_contaminados = sum(testou_positivo == 'Positivo', na.rm = T),
+            n_outras_condicoes = sum(testou_positivo == 'Outras condições'),
+            n_grupo_risco = sum(grupo_de_risco == 'Grupo de risco', na.rm = T),
+            n_cartassin = sum(carteira_assinada == 'Carteira assinada', na.rm = T),
+            n_trabalhadores = sum(carteira_assinada == 'Carteira assinada' |
+                                    carteira_assinada == 'Não tem carteira assinada', na.rm = T),
+            sum_rend_dom_trab = sum(C01012, na.rm = T),
+            sum_rend_dom_INSS = sum(D0013, na.rm = T),
+            #pontuacao_risco = sum()
+            C01012 = C01012,
+            peso1 = V1031,
+            peso2 = V1032,
+            UF = UF,
+            indrisco_aluguel = indrisco_aluguel,
+            indrisco_limpeza = indrisco_limpeza,
+            indrisco_alcool = indrisco_alcool,
+            indrisco_mascaras = indrisco_mascaras,
+            indrisco_agsanit = indrisco_agsanit) %>% 
+  distinct(id_domicilio, V1013, .keep_all = T)
+
+
+table(domicilios$indrisco_limpeza, useNA = 'always')
+
+
+
+#table(domicilios$UF)
+```
+
+#### !! Atualização pós reunião - Total de domicílios por número de moradores
+
+```{r}
+
+dom_numero_moradores <- domicilios %>% 
+  group_by(n_moradores, V1013) %>% 
+  summarise(n_domicilios = sum(peso1)) %>% 
+  dplyr::rename('Mês' = 'V1013',
+                'Número de moradores' = 'n_moradores',
+                'Número de domicílios' = 'n_domicilios') %>% 
+  pivot_wider(names_from = Mês, values_from = `Número de domicílios` )
+
+dom_numero_moradores_kbl <- dom_numero_moradores %>% 
+  kable(caption = 'Total de domicílios por número de moradores',
+        col.names = c('Número de moradores',
+                      'Maio',
+                      'Junho',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>% 
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T,
+               fixed_small_size  = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+```
+
+#### 1. Percentual de domicílios com contaminados por COVID-19 (Domiciliar)
+
+Domicílios com pelo menos um infectado / Número total de domicílios
+
+```{r}
+
+# BR - Formato DF
+
+perc_dom_cont_BR <- domicilios %>% 
+  filter(V1013 %in% c(7:11)) %>% 
+  ungroup() %>% 
+  group_by(V1013) %>% 
+  summarise(perc_dom_contaminados =
+              sum(peso1[n_contaminados >= 1] / sum(peso1))) %>% 
+  mutate(perc_dom_contaminados = round(perc_dom_contaminados *100, 2))
+
+# BR - Formato Kable
+perc_dom_cont_BR_kbl <- perc_dom_cont_BR %>% 
+  kable(caption = 'Percentual mensal de domicílios com pelo menos um contaminado',
+        col.names = c('Mês','%')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T,
+               fixed_small_size  = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+# UF
+perc_dom_cont_UF <- domicilios %>%
+  filter(V1013 %in% c(7:11)) %>%  
+  ungroup() %>% 
+  group_by(V1013, UF) %>% 
+  summarise(perc_dom_contaminados =
+              sum(peso1[n_contaminados >= 1] / sum(peso1))) %>% 
+  mutate(perc_dom_contaminados = round(perc_dom_contaminados *100, 2)) %>% 
+  arrange(UF)
+
+# UF - Formato Kable
+perc_dom_cont_UF_kbl <- perc_dom_cont_UF %>% 
+  kable(caption = 'Percentual mensal de domicílios com pelo menos um contaminado, por UF',
+        col.names = c('Mês', 'UF','%')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+#save.image('manipulacao.RData')
+
+```
+
+## Análises dos indivíduos
+
+### Recodificações preliminares
+
+```{r}
+
+PNADCOV <- PNADCOV %>%
+  mutate(A003 = case_when(A003 == 1 ~ 'Masculino',
+                          A003 == 2 ~ 'Feminino'),
+         cor_categorica = case_when(A004 == 1 ~ 'Branca',
+                                    A004 == 2 | A004 == 4 
+                                    ~ 'Preta ou parda',
+                                    A004 == 3 | A004 == 5
+                                    ~ 'Amarelo/Indígena'),
+         mes_categorico = case_when(V1013 == 5 ~ 'Maio',
+                                    V1013 == 6 ~ 'Junho',
+                                    V1013 == 7 ~ 'Julho',
+                                    V1013 == 8 ~ 'Agosto',
+                                    V1013 == 9 ~ 'Setembro',
+                                    V1013 == 10 ~ 'Outubro',
+                                    V1013 == 11 ~ 'Novembro'),
+         mes_categorico = fct_relevel(mes_categorico, c('Maio',
+                                                        'Junho',
+                                                        'Julho',
+                                                        'Agosto',
+                                                        'Setembro',
+                                                        'Outubro',
+                                                        'Novembro')))
+```
+
+#### **Proporção de contaminados por COVID por sexo**
+
+1.  Variável de uso: A003
+
+```{r}
+
+# Frequência relativa
+
+tabela_cont_sexo_PERC <- PNADCOV %>% 
+  filter(is.na(testou_positivo) == FALSE,
+         testou_positivo == 'Positivo') %>% 
+  group_by(A003, V1013) %>% 
+  summarise(contagem = sum(V1032)) %>%
+  ungroup() %>% 
+  group_by(V1013) %>% 
+  mutate(percentual = contagem/sum(contagem),
+         percentual = round(percentual *100,2)) %>%
+  arrange(V1013) %>%
+  select(-contagem) %>% 
+  pivot_wider(names_from = V1013, values_from = percentual)
+
+# Frequência relativa - Kable
+tabela_cont_sexo_PERC_kbl <- tabela_cont_sexo_PERC %>% 
+  kable(caption = 'Distribuição mensal de contaminados por sexo (%)',
+        col.names = c('Sexo',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+# Frequência absoluta
+tabela_cont_sexo_ABS <- PNADCOV %>%
+  filter(is.na(testou_positivo) == FALSE,
+         testou_positivo == 'Positivo') %>% 
+  group_by(A003, V1013) %>% 
+  summarise(contagem = sum(V1032)) %>%
+  ungroup() %>% 
+  group_by(V1013) %>% 
+  mutate(percentual = contagem/sum(contagem)) %>% 
+  arrange(V1013) %>%
+  select(-percentual) %>% 
+  pivot_wider(names_from = V1013, values_from = contagem)
+
+
+# Frequência absoluta - Kable
+tabela_cont_sexo_ABS_kbl <- tabela_cont_sexo_ABS %>% 
+  kable(caption = 'Distribuição mensal de contaminados por sexo',
+        col.names = c('Sexo',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+```
+
+#### **Proporção de contaminados por Raça/Cor**
+
+1.  Variável de uso: A004
+
+| 1   | Branca   |
+|-----|----------|
+| 2   | Preta    |
+| 3   | Amarela  |
+| 4   | Parda    |
+| 5   | Indígena |
+| 9   | Ignorado |
+
+```{r}
+
+# Proporção de contaminados por raça/cor
+
+tabela_contaminados_cor_PERC <- PNADCOV %>%
+  filter(A004 != 9) %>% 
+  group_by(cor_categorica, mes_categorico, testou_positivo) %>% 
+  summarise(contagem = sum(V1032)) %>%
+  ungroup() %>% 
+  group_by(cor_categorica, mes_categorico) %>% 
+  mutate(percentual = contagem/sum(contagem),
+         percentual = round(percentual *100, 2)) %>% 
+  arrange(cor_categorica) %>%
+  select(-contagem) %>% 
+  pivot_wider(names_from = mes_categorico, values_from = percentual)
+
+
+# Proporção de contaminados por raça/cor, kable
+
+tabela_cont_racacor_kbl <- tabela_contaminados_cor_PERC %>% 
+  kable(caption = 'Distribuição de contaminados e não contaminos por COVID -19, por Raça/Cor',
+        col.names = c('Raça/cor',
+                      'Situação de testagem',
+                      'Maio',
+                      'Junho',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+```
+
+#### **Quartis da idade dos indivíduos contaminados**, (**Histogramas, Boxplot)**
+
+1.  Variável de uso: A002
+
+```{r}
+# Código principal
+
+quartis_idade_contaminados <- PNADCOV %>%
+  group_by(mes_categorico, testou_positivo) %>% 
+  summarise(media_idade = weighted.mean(A002, w = V1032, na.rm = T),
+            desvio_idade = weighted.sd(A002, w = V1032, na.rm = T),
+            min = weighted.quantile(A002, probs = 0, w = V1032, na.rm = T),
+            q25 = weighted.quantile(A002, probs = 0.25, w = V1032, na.rm = T),
+            q50 = weighted.quantile(A002, probs = 0.5, w = V1032, na.rm = T),
+            q75 = weighted.quantile(A002, probs = 0.75, w = V1032, na.rm = T),
+            max = weighted.quantile(A002,probs = 1, w = V1032, na.rm = T)) %>% 
+  mutate(media_idade = round(media_idade, 2),
+         desvio_idade = round(desvio_idade,2))
+
+quartis_idade_contaminados_kbl <- quartis_idade_contaminados %>% 
+  kable(caption = 'Quartis das idades de contaminados e não contaminados ao longo do período',
+        col.names = c('Mês',
+                      'Situação de testagem',
+                      'Média idade',
+                      'Desvio idade',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+  
+```
+
+#### **Proporção de contaminados por ocupação**
+
+1.  Variável de uso: C007
+
+```{r}
+
+proporcao_contaminados_profissao <- PNADCOV %>% 
+  group_by(V1013, C007C, testou_positivo) %>%
+  summarise(contagem = sum(V1032)) %>% 
+  ungroup() %>% 
+  group_by(V1013, C007C) %>% 
+  mutate(percentual = contagem/sum(contagem),
+         percentual = round(percentual *100, 2)) %>% 
+  arrange(C007C) %>% 
+  select(-contagem) %>% 
+  pivot_wider(names_from = V1013, values_from = percentual) %>% 
+  filter(`testou_positivo` == 'Positivo') %>% 
+  select(-c(`5`, `6`, `testou_positivo`))
+
+
+prop_cont_profis_kbl <- proporcao_contaminados_profissao %>% 
+  kable(caption = 'Proporção de contaminados por ocupação ao longo do período (%)',
+        col.names = c('Ocupação',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+
+  
+```
+
+#### **Proporção de indivíduos contaminados e não contaminados em relação ao afastamento do trabalho**
+
+-   **Qual o percentual de indivíduos afastados que se afastaram por conta da quarentena**
+
+1.  Variável de uso: C002 - Afastado do trabalho, C003 - Motivo do afastamento
+
+|     |                                                                                                                                       |
+|-----|---------------------------------------------------------------------------------------------------------------------------------------|
+| 1   | Estava em quarentena, isolamento, distanciamento social ou férias coletivas                                                           |
+| 2   | Férias, folga ou jornada de trabalho variável                                                                                         |
+| 3   | Licença maternidade ou paternidade                                                                                                    |
+| 4   | Licença remunerada por motivo de saúde ou acidente da própria pessoa                                                                  |
+| 5   | Outro tipo de licença remunerada (estudo, paternidade, casamento, licença prêmio, etc.)                                               |
+| 6   | Afastamento do próprio negócio/empresa por motivo de gestação, saúde, acidente, etc., sem ser remunerado por instituto de previdência |
+| 7   | Fatores ocasionais (mau tempo, paralisação nos serviços de transportes, etc.)                                                         |
+| 8   | Outro motivo                                                                                                                          |
+
+```{r}
+
+proporcao_contaminados_afastamento <- PNADCOV %>%
+  filter(!is.na(C003)) %>% 
+  group_by(V1013, C003) %>%
+  summarise(contagem = sum(V1032)) %>% 
+  ungroup() %>% 
+  group_by(V1013) %>% 
+  mutate(percentual = contagem/sum(contagem),
+         percentual = round(percentual *100, 2)) %>% 
+  arrange(C003) %>%
+  select(-contagem) %>% 
+  pivot_wider(names_from = V1013, values_from = percentual)
+
+# KBL 
+
+pro_contam_afast_kbl<- proporcao_contaminados_afastamento %>% 
+  kable(caption = 'Proporção de contaminados por motivo do afastamento ao longo do período (%)',
+        col.names = c('Mot. Afastamento',
+                      'Maio',
+                      'Junho',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+
+```
+
+#### **Quartis do número de horas trabalhadas (efetivamente e normalmente) por toda a população trabalhadora e pela população trabalhadora contaminada.**
+
+-   **Detalhamento por profissão (C007C)**
+
+```{r}
+# Horas normalmente trabalhadas 
+horas_norm_trab <- PNADCOV %>%
+  group_by(V1013) %>%
+  summarise(media_horas_norm = weighted.mean(C008, w = V1032, na.rm = T),
+            desvio_horas_norm = weighted.sd(C008, w = V1032, na.rm = T),
+            min = weighted.quantile(C008, probs = 0, w = V1032, na.rm = T),
+            q25 = weighted.quantile(C008, probs = 0.25, w = V1032, na.rm = T),
+            q50 = weighted.quantile(C008, probs = 0.5, w = V1032, na.rm = T),
+            q75 = weighted.quantile(C008, probs = 0.75, w = V1032, na.rm = T),
+            max = weighted.quantile(C008,probs = 1, w = V1032, na.rm = T),
+            ) %>% 
+  mutate(media_horas_norm = round(media_horas_norm, 2),
+         desvio_horas_norm = round(desvio_horas_norm,2))
+
+
+horas_norm_trab_kbl <- horas_norm_trab %>% 
+  kable(caption = 'Quartis das horas normalmente trabalhadas ao longo do período',
+        col.names = c('Mês',
+                      'Média horas normalmente trabalhadas',
+                      'Desvio horas normalmente trabalhadas',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+#Horas normalmente trabalhadas (por profissão)
+
+horas_norm_trab_profissao <- PNADCOV %>%
+  group_by(mes_categorico, C007C) %>%
+  summarise(media_horas_norm = weighted.mean(C008, w = V1032, na.rm = T),
+            desvio_horas_norm = weighted.sd(C008, w = V1032, na.rm = T),
+            min = weighted.quantile(C008, probs = 0, w = V1032, na.rm = T),
+            q25 = weighted.quantile(C008, probs = 0.25, w = V1032, na.rm = T),
+            q50 = weighted.quantile(C008, probs = 0.5, w = V1032, na.rm = T),
+            q75 = weighted.quantile(C008, probs = 0.75, w = V1032, na.rm = T),
+            max = weighted.quantile(C008,probs = 1, w = V1032, na.rm = T)) %>% 
+  mutate(media_horas_norm = round(media_horas_norm, 2),
+         desvio_horas_norm = round(desvio_horas_norm,2),
+         across(.cols = c(q25:q75),.fns = round, digits = 1)) %>% 
+  arrange(C007C)
+
+horas_norm_trab_PROF_kbl <- horas_norm_trab_profissao %>% 
+  kable(caption = 'Quartis das horas normalmente trabalhadas ao longo do período, por ocupação',
+        col.names = c('Mês',
+                      'Ocupação',
+                      'Média horas normalmente trabalhadas',
+                      'Desvio horas normalmente trabalhadas',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+# Horas efetivamente trabalhadas
+
+horas_efet_trab <- PNADCOV %>%
+  group_by(V1013) %>%
+  summarise(media_horas_efet = weighted.mean(C009, w = V1032, na.rm = T),
+            desvio_horas_efet = weighted.sd(C009, w = V1032, na.rm = T),
+            min = weighted.quantile(C009, probs = 0, w = V1032, na.rm = T),
+            q25 = weighted.quantile(C009, probs = 0.25, w = V1032, na.rm = T),
+            q50 = weighted.quantile(C009, probs = 0.5, w = V1032, na.rm = T),
+            q75 = weighted.quantile(C009, probs = 0.75, w = V1032, na.rm = T),
+            max = weighted.quantile(C009,probs = 1, w = V1032, na.rm = T)) %>% 
+  mutate(media_horas_efet = round(media_horas_efet, 2),
+         desvio_horas_efet = round(desvio_horas_efet,2))
+
+horas_efet_trab_kbl <- horas_efet_trab %>% 
+  kable(caption = 'Quartis das horas efetivamente trabalhadas ao longo do período',
+        col.names = c('Mês',
+                      'Média horas normalmente trabalhadas',
+                      'Desvio horas normalmente trabalhadas',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+#Horas efetivamente trabalhadas (por profissão)
+
+horas_efet_trab_profissao <- PNADCOV %>%
+  group_by(mes_categorico, C007C) %>%
+  summarise(media_horas_efet = weighted.mean(C009, w = V1032, na.rm = T),
+            desvio_horas_efet = weighted.sd(C009, w = V1032, na.rm = T),
+            min = weighted.quantile(C009, probs = 0, w = V1032, na.rm = T),
+            q25 = weighted.quantile(C009, probs = 0.25, w = V1032, na.rm = T),
+            q50 = weighted.quantile(C009, probs = 0.5, w = V1032, na.rm = T),
+            q75 = weighted.quantile(C009, probs = 0.75, w = V1032, na.rm = T),
+            max = weighted.quantile(C009,probs = 1, w = V1032, na.rm = T)) %>% 
+  mutate(media_horas_efet = round(media_horas_efet, 2),
+         desvio_horas_efet = round(desvio_horas_efet,2),
+         across(.cols = c(q25:q75),.fns = round, digits = 1)) %>% 
+  arrange(C007C)
+
+horas_efet_trab_profissao_kbl <- horas_efet_trab_profissao %>%
+  kable(caption = 'Quartis das horas efetivamente trabalhadas ao longo do período, por ocupação',
+        col.names = c('Mês',
+                      'Ocupação',
+                      'Média horas normalmente trabalhadas',
+                      'Desvio horas normalmente trabalhadas',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+  
+
+
+
+```
+
+#### Solicitação Marden - Horas normalmente trabalhadas - efetivamente trabalhadas
+
+##### Sintético (toda a população) C009 e C008
+
+```{r}
+
+norm_efet_trab_tudo <- PNADCOV %>%
+  group_by(V1013) %>%
+  summarise(media_horas_efet = weighted.mean(C009, w = V1032, na.rm = T),
+            media_horas_norm = weighted.mean(C008, w = V1032, na.rm = T)) %>% 
+  mutate(media_horas_efet = round(media_horas_efet, 2),
+         diff_norm_efet = media_horas_norm - media_horas_efet) %>% 
+  relocate(V1013, media_horas_norm, media_horas_efet, diff_norm_efet)
+
+norm_efet_trab_tudo_kbl <- norm_efet_trab_tudo %>% 
+  kable(caption = 'Diferença entre as médias das horas normalmente e efetivamente trabalhadas, toda a população trabalhadora.',
+        col.names = c('Mês',
+                      'Média horas normalmente trabalhadas',
+                      'Média horas efetivamente trabalhadas',
+                      'Diferença')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+```
+
+##### Específico (por profissão) C009 e C008
+
+```{r}
+norm_efet_trab_prof <- PNADCOV %>%
+  group_by(V1013, C007C) %>%
+  summarise(media_horas_efet = weighted.mean(C009, w = V1032, na.rm = T),
+            media_horas_norm = weighted.mean(C008, w = V1032, na.rm = T)) %>%
+  mutate(media_horas_efet = round(media_horas_efet, 2),
+         diff_norm_efet = media_horas_norm - media_horas_efet) %>% 
+  arrange(C007C) %>% 
+  relocate(C007C, V1013, media_horas_norm, media_horas_efet, diff_norm_efet)
+
+norm_efet_trab_prof_kbl <- norm_efet_trab_prof %>% 
+  kable(caption = 'Diferença entre as médias das horas normalmente e efetivamente trabalhadas, todas as ocupações.',
+        col.names = c('Ocupação',
+                      'Mês',
+                      'Média horas normalmente trabalhadas',
+                      'Média horas efetivamente trabalhadas',
+                      'Diferença')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+```
+
+## Análises domiciliares
+
+#### **Número de moradores no domicílio - Sem indivíduos contaminados ou com pelo menos um contaminado**
+
+```{r}
+
+pelo_menos_um_contaminado <- domicilios %>% 
+  filter(n_moradores > 1) %>% 
+  ungroup() %>%
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Nenhum contaminado')) %>% 
+  group_by(contaminacao, V1013) %>% 
+  summarise(media_moradores = weighted.mean(n_moradores, w = peso1)) %>% 
+  mutate(media_moradores = round(media_moradores, 2))
+
+pelo_menos_um_cont_kbl <- pelo_menos_um_contaminado %>% 
+  kable(caption = 'Tamanho dos domicílios por situação de contaminação',
+        col.names = c('Contaminação',
+                      'Mês',
+                      'Média de moradores')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+
+```
+
+#### **Proporção de domicílios de determinada cor, por contaminação (Fazer depois)**
+
+```{r}
+
+# domicilios_contaminados_cor <- PNADCOV %>% 
+#   filter(V1013 == 11) %>% 
+#   group_by(id_domicilio, A004) %>% 
+#   summarise(contagem = n(),
+#             V1031 = V1031) %>% 
+#   ungroup() %>% 
+#   group_by(id_domicilio) %>% 
+#   mutate(percentual_racacor = contagem/sum(contagem))
+```
+
+#### **Qual a proporção de domicílios de risco? Isto é, domicílios com uma das três condições (Fatores de risco)**
+
+-   **Qual a proporção de domicílios de risco que possuem pelo menos um contaminado? (Fatores de risco)**
+
+```{r}
+
+mediacont_naocont_gruporisco <- domicilios %>% 
+  filter(n_moradores > 1) %>% 
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Outras condições')) %>% 
+  group_by(V1013, contaminacao) %>%
+  mutate(prop_grupo_risco = n_grupo_risco/n_moradores) %>% 
+  summarise(media_grupo_risco = weighted.mean(prop_grupo_risco, w = peso1)) %>% 
+  mutate(media_grupo_risco= round(media_grupo_risco *100, 2)) %>% 
+  pivot_wider(names_from = V1013, values_from = media_grupo_risco) 
+
+# kbl
+mediacont_naocont_gruporisco_kbl <- mediacont_naocont_gruporisco %>% 
+  kable(caption = 'Proporção de domicílios que possuem pelo menos uma pessoa no grupo de risco, por situação de contaminação',
+        col.names = c('Contaminação',
+                      'Maio',
+                      'Junho',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+```
+
+#### **Carteira assinada - Proporção de contaminados com e sem carteira assinada**
+
+-   **Num universo de domicílios (não unipessoais) que possuem pelo menos um contaminado por COVID-19, qual a proporção de domicílios que têm pelo menos um indivíduo com carteira de trabalho assinada.**
+
+    -   Segregar por UF ou Região
+
+```{r}
+
+## Idéia da Aira - Domicílios com e sem indivíduos com carteira assinada (dentro da população trabalhadora), qual a proporção de casos de COVID?
+
+cart_assinada_cont <- domicilios %>% 
+  filter(n_moradores > 1, # Retirada dos domicilios unipessoais 
+         n_trabalhadores >= 1) %>% # Apenas a população trabalhadora
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Nenhum contaminado'),
+         condicao_trabalho = case_when(n_cartassin >= 1 ~ '>= 1 Trabalhador CLT',
+                                       n_cartassin == 0 ~ 'Nenhum CLT')) %>% 
+  group_by(V1013, condicao_trabalho) %>%
+  mutate(prop_contaminados = n_contaminados/n_moradores) %>% 
+  summarise(media_propcontam = weighted.mean(prop_contaminados, w = peso1)) %>% 
+  mutate(media_propcontam= round(media_propcontam *100, 2)) %>%
+  pivot_wider(names_from = V1013, values_from = media_propcontam)
+
+
+# KBL 
+cart_assinada_cont_kbl <- cart_assinada_cont %>% 
+  kable(caption = 'Proporção de domicílios por situação de trabalho e testagem',
+        col.names = c('Contaminação',
+                      'Maio',
+                      'Junho',
+                      'Julho',
+                      'Agosto',
+                      'Setembro',
+                      'Outubro',
+                      'Novembro')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+```
+
+A média da proporção de contaminados de todos os domicílios brasileiros que possuem ou não pelo menos um indivíduo que tem carteira de trabalho assinada é (...)
+
+#### **Quartis dos rendimentos do trabalho dos domicílios por situação de contaminação pela COVID-19.**
+
+```{r}
+
+rend_trab_cont <- domicilios %>% 
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Nenhum contaminado')) %>% 
+  filter(n_moradores > 1,
+         !is.na(contaminacao)) %>% 
+  group_by(V1013, contaminacao) %>%
+  summarise(media_renda_dom = weighted.mean(sum_rend_dom_trab, w = peso1, na.rm = T),
+            desvio_renda_dom = weighted.sd(sum_rend_dom_trab, w = peso1, na.rm = T),
+            min = weighted.quantile(sum_rend_dom_trab, probs = 0, w = peso1, na.rm = T),
+            q25 = weighted.quantile(sum_rend_dom_trab, probs = 0.25, w = peso1, na.rm = T),
+            q50 = weighted.quantile(sum_rend_dom_trab, probs = 0.5, w = peso1, na.rm = T),
+            q75 = weighted.quantile(sum_rend_dom_trab, probs = 0.75, w = peso1, na.rm = T),
+            max = weighted.quantile(sum_rend_dom_trab, probs = 1, w = peso1, na.rm = T))
+
+#kbl
+
+rend_trab_cont_kbl <- rend_trab_cont %>% 
+  kable(caption = 'Quartis dos rendimentos do trabalho dos domicílios por situação de contaminação',
+        col.names = c('Mês',
+                      'Contaminação',
+                      'Média rendimento',
+                      'Desvio rendimento',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+  
+
+```
+
+Problema de recodificação: devemos separar os indivíduos que testaram negativo?
+
+#### **Média dos valores recebidos via aposentadoria e pensão para domicílios contaminados ou não contaminados**
+
+D0013
+
+```{r}
+
+rend_dom_INSS <- domicilios %>% 
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Nenhum contaminado')) %>% 
+  filter(n_moradores > 1,
+         !is.na(contaminacao)) %>% 
+  group_by(V1013, contaminacao) %>%
+  summarise(media_renda_dom_INSS = weighted.mean(sum_rend_dom_INSS, w = peso1, na.rm = T),
+            desvio_renda_dom_INSS = weighted.sd(sum_rend_dom_INSS, w = peso1, na.rm = T),
+            min = weighted.quantile(sum_rend_dom_INSS, probs = 0, w = peso1, na.rm = T),
+            q25 = weighted.quantile(sum_rend_dom_INSS, probs = 0.25, w = peso1, na.rm = T),
+            q50 = weighted.quantile(sum_rend_dom_INSS, probs = 0.5, w = peso1, na.rm = T),
+            q75 = weighted.quantile(sum_rend_dom_INSS, probs = 0.75, w = peso1, na.rm = T),
+            max = weighted.quantile(sum_rend_dom_INSS, probs = 1, w = peso1, na.rm = T))
+
+
+rend_dom_INSS_kbl <- rend_dom_INSS %>% 
+  kable(caption = 'Quartis dos rendimentos de valores do INSS, dos domicílios por situação de contaminação',
+        col.names = c('Mês',
+                      'Contaminação',
+                      'Média rendimento',
+                      'Desvio rendimento',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+
+
+```
+
+#### **Índice dos domicílios vulneráveis** - **F001 != 1,7 F002A1:F002A5 != 1, 3**
+
+Domicílios vulneráveis
+
+```{r}
+
+indice_risco <- domicilios %>% 
+  filter(n_moradores > 1) %>% 
+  mutate(contaminacao = case_when(n_contaminados >= 1 ~ '>= 1 contaminado',
+                                  n_contaminados == 0 ~ 'Nenhum contaminado'),
+         indice_vulnerabilidade = 
+           indrisco_aluguel +
+           indrisco_agsanit +
+           indrisco_limpeza +
+           indrisco_mascaras +
+           indrisco_alcool) 
+
+# 
+indicador_risco_quartis <- indice_risco %>% 
+  group_by(V1013, contaminacao) %>%
+  summarise(media_indvuln_dom = weighted.mean(indice_vulnerabilidade,
+                                          w = peso1,
+                                          na.rm = T),
+            desvio_indvuln_dom  = weighted.sd(indice_vulnerabilidade,
+                                          w = peso1,
+                                          na.rm = T),
+            min = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0,
+                                    w = peso1,
+                                    na.rm = T),
+            q25 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.25,
+                                    w = peso1,
+                                    na.rm = T),
+            q50 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.5,
+                                    w = peso1,
+                                    na.rm = T),
+            q75 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.75,
+                                    w = peso1,
+                                    na.rm = T),
+            max = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 1,
+                                    w = peso1, na.rm = T))
+
+indicador_risco_quartis_kbl <- indicador_risco_quartis %>% 
+  kable(caption = 'Quartis do índice de vulnerabilidade domiciliar por situação de contaminação',
+        col.names = c('Mês',
+                      'Contaminação',
+                      'Média índice de vulnerabilidade',
+                      'Desvio índice de vulnerabilidade',
+                      'Min',
+                      'Q25',
+                      'Q50',
+                      'Q75',
+                      'Max')) %>%   
+  kable_classic_2(html_font = 'Cambria') %>%
+  kableExtra:: footnote('PNAD Covid',
+               general_title = 'Fonte: ',
+               footnote_as_chunk = T) %>% 
+  kable_styling(bootstrap_options = c("striped",
+                                      "hover", 
+                                      "condensed"),
+                            font_size = 15)
+  
+
+
+  
+
+#UF 
+
+indicador_risco_quartis_UF <- indice_risco %>% 
+  group_by(UF, contaminacao) %>%
+  summarise(media_indvuln_dom = weighted.mean(indice_vulnerabilidade,
+                                          w = peso1,
+                                          na.rm = T),
+            desvio_indvuln_dom  = weighted.sd(indice_vulnerabilidade,
+                                          w = peso1,
+                                          na.rm = T),
+            min = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0,
+                                    w = peso1,
+                                    na.rm = T),
+            q25 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.25,
+                                    w = peso1,
+                                    na.rm = T),
+            q50 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.5,
+                                    w = peso1,
+                                    na.rm = T),
+            q75 = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 0.75,
+                                    w = peso1,
+                                    na.rm = T),
+            max = weighted.quantile(indice_vulnerabilidade,
+                                    probs = 1,
+                                    w = peso1, na.rm = T))
+  
+
+
+```
+
+```{r}
+save.image('manipulacao.RData')
+```
